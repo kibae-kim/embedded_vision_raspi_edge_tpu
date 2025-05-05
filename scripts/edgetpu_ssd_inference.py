@@ -1,10 +1,13 @@
-# edge_demo/scripts/edgetpu_inference.py
-
+import os
 import cv2
 import time
 from pycoral.adapters import detect
 from pycoral.adapters import common
 from pycoral.utils.edgetpu import make_interpreter
+
+def get_abs_path(relative_path):
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # edge_demo 기준
+    return os.path.join(root, relative_path.replace('/', os.sep))
 
 def load_model(model_path):
     interpreter = make_interpreter(model_path)
@@ -28,10 +31,10 @@ def draw_objects(frame, objects):
     return frame
 
 def main():
-    model_path = "models/edgetpu/tf2_ssd_mobilenet_v2_coco17_ptq_edgetpu.tflite"
+    model_path = get_abs_path("models/edgetpu/tf2_ssd_mobilenet_v2_coco17_ptq_edgetpu.tflite")
 
     cap = cv2.VideoCapture(0)
-    assert cap.isOpened(), "USB 카메라 접근 불가"
+    assert cap.isOpened(), "USB Cannot be accessible"
 
     interpreter = load_model(model_path)
 
