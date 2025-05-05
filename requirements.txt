@@ -1,0 +1,7 @@
+numpy
+opencv-python-headless
+Pillow
+matplotlib
+pyusb
+pyserial
+tflite-runtime==2.5.0.post1
