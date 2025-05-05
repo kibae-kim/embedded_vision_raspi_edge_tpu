@@ -1,15 +1,9 @@
-# bodypix_segmentation_edgetpu.py - EdgeTPU 실시간 BodyPix 세그멘테이션
+# edgetpu_bodypix_segmentation.py - EdgeTPU Real-Time BodyPix Segmentation (Decoder-Free)
 import os
 import cv2
 import numpy as np
-import time
 from pycoral.utils.edgetpu import make_interpreter
 from pycoral.adapters.common import input_size, set_input, output_tensor
-
-
-def get_abs_path(relative_path):
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(root, relative_path.replace('/', os.sep))
 
 
 def load_model(model_path):
@@ -18,46 +12,41 @@ def load_model(model_path):
     return interpreter
 
 
-def run_inference(interpreter, frame):
-    size = input_size(interpreter)
-    image = cv2.resize(frame, size)
-    set_input(interpreter, image)
+def segment_body(interpreter, frame):
+    w, h = input_size(interpreter)
+    resized = cv2.resize(frame, (w, h))
+    rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+    set_input(interpreter, rgb)
     interpreter.invoke()
-    segmentation_map = output_tensor(interpreter, 0)
-    return segmentation_map[0]
-
-
-def decode_segmap(segmentation, num_classes=2):
-    label_colors = np.array([[0, 0, 0], [0, 255, 0]], dtype=np.uint8)
-    color_seg = label_colors[segmentation]
-    return color_seg
+    segmentation = output_tensor(interpreter, 0)
+    segmentation = segmentation.squeeze()  # shape: (h, w)
+    return segmentation
 
 
 def main():
-    model_path = get_abs_path('models/edgetpu/bodypix_mobilenet_v1_075_768_576_16_quant_decoder_edgetpu.tflite')
-    interpreter = load_model(model_path)
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    model_path = os.path.join(root, "models", "edgetpu", "bodypix_mobilenet_v1_075_768_576_16_quant_decoder_edgetpu.tflite")
 
     cap = cv2.VideoCapture(0)
-    assert cap.isOpened(), "USB Camera is Not accessible"
+    assert cap.isOpened(), "Webcam not accessible"
 
-    size = input_size(interpreter)
+    interpreter = load_model(model_path)
+    w, h = input_size(interpreter)
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        start = time.time()
-        seg = run_inference(interpreter, frame)
-        elapsed = time.time() - start
+        start = cv2.getTickCount()
+        mask = segment_body(interpreter, frame)
+        mask_resized = cv2.resize(mask.astype(np.uint8)*255, (frame.shape[1], frame.shape[0]))
+        mask_color = cv2.applyColorMap(mask_resized, cv2.COLORMAP_JET)
+        overlay = cv2.addWeighted(frame, 0.6, mask_color, 0.4, 0)
 
-        seg = cv2.resize(seg.astype(np.uint8), (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_NEAREST)
-        mask = decode_segmap(seg)
-        blended = cv2.addWeighted(frame, 0.5, mask, 0.5, 0)
-
-        cv2.putText(blended, f"{elapsed * 1000:.1f} ms", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-        cv2.imshow("BodyPix (EdgeTPU)", blended)
+        time_ms = (cv2.getTickCount() - start) / cv2.getTickFrequency() * 1000
+        cv2.putText(overlay, f"{time_ms:.1f} ms", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
+        cv2.imshow("EdgeTPU BodyPix", overlay)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
@@ -66,5 +55,5 @@ def main():
     cv2.destroyAllWindows()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

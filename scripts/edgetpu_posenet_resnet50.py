@@ -1,93 +1,73 @@
-# posenet_resnet50_edgetpu.py - EdgeTPU Real Time Pose Estimation
+# edgetpu_posenet_resnet50.py - EdgeTPU ResNet50 기반 실시간 포즈 추정
 import os
 import cv2
 import numpy as np
-import time
 from pycoral.utils.edgetpu import make_interpreter
 from pycoral.adapters.common import input_size, set_input, output_tensor
 
-# COCO Pose Keypoint hue and connection 
-def draw_pose(frame, keypoints, threshold=0.2):
-    COCO_EDGES = [
-        (0, 1), (1, 3), (0, 2), (2, 4),
-        (5, 7), (7, 9), (6, 8), (8, 10),
-        (5, 6), (5, 11), (6, 12),
-        (11, 13), (13, 15), (12, 14), (14, 16)
-    ]
-    for i, (y, x, score) in enumerate(keypoints):
-        if score > threshold:
-            cv2.circle(frame, (int(x), int(y)), 4, (0, 255, 255), -1)
-    for a, b in COCO_EDGES:
-        if keypoints[a][2] > threshold and keypoints[b][2] > threshold:
-            pt1 = (int(keypoints[a][1]), int(keypoints[a][0]))
-            pt2 = (int(keypoints[b][1]), int(keypoints[b][0]))
-            cv2.line(frame, pt1, pt2, (255, 0, 0), 2)
-    return frame
+KEYPOINT_EDGES = [
+    (5, 7), (7, 9), (6, 8), (8, 10),
+    (5, 6), (5, 11), (6, 12), (11, 13),
+    (13, 15), (12, 14), (14, 16)
+]
 
-
-def get_abs_path(relative_path):
+def get_model_path():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(root, relative_path.replace('/', os.sep))
+    return os.path.join(root, "models", "edgetpu", "posenet_resnet_50_416_288_16_quant_edgetpu_decoder.tflite")
 
 
-def load_model(model_path):
-    interpreter = make_interpreter(model_path)
-    interpreter.allocate_tensors()
-    return interpreter
+def decode_pose(heatmap, offsets, stride, input_dims, orig_dims):
+    h, w, num_kp = heatmap.shape
+    kp_coords = []
 
-
-def run_inference(interpreter, frame):
-    size = input_size(interpreter)
-    image = cv2.resize(frame, size)
-    set_input(interpreter, image)
-    interpreter.invoke()
-    heatmaps = output_tensor(interpreter, 0)[0]  # [H, W, 17]
-    offsets = output_tensor(interpreter, 1)[0]   # [H, W, 34]
-    return heatmaps, offsets
-
-
-def decode_pose(heatmaps, offsets, stride=16):
-    num_keypoints = heatmaps.shape[-1]
-    keypoints = []
-    for i in range(num_keypoints):
-        hmap = heatmaps[:, :, i]
-        y, x = np.unravel_index(np.argmax(hmap), hmap.shape)
-        score = hmap[y, x]
+    for i in range(num_kp):
+        heatmap_i = heatmap[:, :, i]
+        y, x = np.unravel_index(np.argmax(heatmap_i), heatmap_i.shape)
         offset_y = offsets[y, x, i]
-        offset_x = offsets[y, x, i + num_keypoints]
-        keypoints.append((y * stride + offset_y, x * stride + offset_x, score))
-    return keypoints
+        offset_x = offsets[y, x, i + num_kp]
+        kp_x = (x * stride + offset_x) * orig_dims[0] / input_dims[0]
+        kp_y = (y * stride + offset_y) * orig_dims[1] / input_dims[1]
+        kp_coords.append((int(kp_x), int(kp_y)))
+
+    return kp_coords
 
 
 def main():
-    model_path = get_abs_path('models/edgetpu/posenet_resnet_50_416_288_16_quant_edgetpu_decoder.tflite')
-    interpreter = load_model(model_path)
-    size = input_size(interpreter)
+    model_path = get_model_path()
+    interpreter = make_interpreter(model_path)
+    interpreter.allocate_tensors()
+    input_w, input_h = input_size(interpreter)
+    stride = 16
 
     cap = cv2.VideoCapture(0)
-    assert cap.isOpened(), "USB Camera is Not Accessible"
+    assert cap.isOpened(), "Camera cannot be opened."
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        start = time.time()
-        heatmaps, offsets = run_inference(interpreter, frame)
-        keypoints = decode_pose(heatmaps, offsets)
-        elapsed = time.time() - start
+        resized = cv2.resize(frame, (input_w, input_h))
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        set_input(interpreter, rgb)
+        interpreter.invoke()
 
-        annotated = draw_pose(frame.copy(), keypoints)
-        cv2.putText(annotated, f"{elapsed * 1000:.1f} ms", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        heatmap = output_tensor(interpreter, 0).squeeze()  # (H, W, 17)
+        offsets = output_tensor(interpreter, 1).squeeze()  # (H, W, 34)
+        keypoints = decode_pose(heatmap, offsets, stride, (input_w, input_h), (frame.shape[1], frame.shape[0]))
 
-        cv2.imshow("PoseNet (EdgeTPU)", annotated)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        for x, y in keypoints:
+            cv2.circle(frame, (x, y), 4, (0, 255, 0), -1)
+        for a, b in KEYPOINT_EDGES:
+            cv2.line(frame, keypoints[a], keypoints[b], (255, 0, 0), 2)
+
+        cv2.imshow("EdgeTPU PoseNet", frame)
+        if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
     cap.release()
     cv2.destroyAllWindows()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
